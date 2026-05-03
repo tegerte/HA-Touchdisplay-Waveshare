@@ -14,6 +14,10 @@ Portiert vom MAtouch-Schwesterprojekt unter `../ha_7zoll_disp/` (1024×600). Sen
 
 Das gesamte Hardware-Setup wird via [inytar/waveshare-esp32-s3-touch-lcd-7-esphome](https://github.com/inytar/waveshare-esp32-s3-touch-lcd-7-esphome) als ESPHome-Package eingebunden — erfordert ESPHome ≥ 2025.8.0. PSRAM wird per Override auf **80 MHz** zurückgesetzt (das vom Package gesetzte 120 MHz octal verursacht auf diesem Board eine Boot-Loop).
 
+## Gehäuse
+
+3D-druckbares Gehäuse: `esp32-s3-touch-lcd-7-case-5.stl` (im Repo). Quelle: [Waveshare ESP32-S3 7inch Capacitive Touch Display Case auf Printables](https://www.printables.com/model/1425850-waveshare-esp32-s3-7inch-capacitive-touch-display) — passt exakt auf das Waveshare ESP32-S3-Touch-LCD-7-Board.
+
 ## UI-Seiten
 
 | Seite       | Inhalt                                                                        |
