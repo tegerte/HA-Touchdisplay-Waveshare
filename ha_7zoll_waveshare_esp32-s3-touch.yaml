@@ -1,0 +1,1560 @@
+#######################################################################
+#  ESPHome config for Waveshare ESP32-S3-Touch-LCD-7 (800x480)
+#  Hardware: ESP32-S3, 8MB flash, octal PSRAM, 800x480 RGB display,
+#            GT911 touchscreen, CH422G IO expander, backlight via expander
+#
+#  Hardware setup is provided by the inytar package — it sets up:
+#    psram, esp32, i2c (GPIO8/9), ch422g, mipi_rgb display,
+#    GT911 touchscreen (INT=GPIO4, RESET via CH422G), backlight light entity
+#    "lcdbacklight", and antiburn protection script/switch.
+#
+#  Ported from MAtouch ESP32-S3 7" (1024x600); UI rescaled to 800x480.
+#######################################################################
+substitutions:
+  graph_server_ip: "192.168.1.145"   # ← IP des Homeservers (Python-Bildserver Port 8765)
+
+esphome:
+  name: waveshare-esp32s3-7
+  friendly_name: Waveshare_ESP32S3_7
+  on_boot:
+    priority: -100       # after LVGL init so widgets already exist
+    then:
+      - lvgl.label.update:
+          id: lbl_charge_soc
+          text: "SoC: --"
+      # Wait until evcc_mode has received its state from HA, then sync buttons
+      - wait_until:
+          lambda: 'return id(evcc_mode).has_state();'
+      - lvgl.label.update:
+          id: lbl_charge_mode
+          text: !lambda 'return "Modus: " + id(evcc_mode).state;'
+      - lambda: |-
+          std::string mode = id(evcc_mode).state;
+          lv_obj_t *btns[] = {id(btn_mode_pv), id(btn_mode_minpv), id(btn_mode_now), id(btn_mode_off)};
+          const char *modes[] = {"pv", "minpv", "now", "off"};
+          for (int i = 0; i < 4; i++) {
+            if (mode == modes[i]) {
+              lv_obj_add_state(btns[i], LV_STATE_CHECKED);
+            } else {
+              lv_obj_clear_state(btns[i], LV_STATE_CHECKED);
+            }
+          }
+          if (mode == "minpv") {
+            lv_obj_add_state(id(charge_PV_Start), LV_STATE_CHECKED);
+          } else {
+            lv_obj_clear_state(id(charge_PV_Start), LV_STATE_CHECKED);
+          }
+
+#######################################################################
+#  Hardware package (display, touch, I2C, CH422G, backlight)
+#  Requires ESPHome 2025.8.0+
+#######################################################################
+packages:
+  waveshare: github://inytar/waveshare-esp32-s3-touch-lcd-7-esphome/waveshare-esp32-s3-touch-lcd-7.yaml@main
+
+# Override: package sets PSRAM to 120 MHz (experimental) — drop to 80 MHz
+# for stability on this board.
+psram:
+  mode: octal
+  speed: 80MHz
+
+#######################################################################
+#  Connectivity
+#######################################################################
+logger:
+  level: DEBUG
+
+api:
+  encryption:
+    key: "f96WZzgTTD2DxeZWz0VdKoo8bOM+FIxW3mRqBJvQ6nw="
+
+ota:
+  - platform: esphome
+    password: "d07b6149f214b6af250accfb0517c23d"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Fallback hotspot when WiFi connection fails
+  ap:
+    ssid: "waveshare_esp32s3_7"
+    password: "F03ZsTI6ltRE"
+
+captive_portal:
+
+#######################################################################
+#  Fonts
+#######################################################################
+font:
+  # Montserrat 28 with € sign for value labels (Solar-Tabelle main_page)
+  - file: "gfonts://Montserrat"
+    id: montserrat_28_ext
+    size: 28
+    bpp: 4
+    extras:
+      - file: "gfonts://Montserrat"
+        glyphs: ["€"]
+
+  # Montserrat 22 with € sign for the EV-Tabelle (kompaktere Werte)
+  - file: "gfonts://Montserrat"
+    id: montserrat_22_ext
+    size: 22
+    bpp: 4
+    extras:
+      - file: "gfonts://Montserrat"
+        glyphs: ["€"]
+
+  # Material Design Icons – only include the codepoints actually used
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: icons_100
+    size: 100
+    bpp: 4
+    glyphs: [
+      "\U000F0335", # mdi-lightbulb
+      "\U000F0336", # mdi-lightbulb-outline
+      "\U000F05F1", # mdi-ev-station
+      "\U000F0A72", # mdi-solar-power
+      ]
+
+  # Smaller MDI icons for bar labels and Charge-Page buttons
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: icons_30
+    size: 30
+    bpp: 4
+    glyphs: [
+      "\U000F010B", # mdi-car (Mercedes)
+      "\U000F0A72", # mdi-solar-power (PV)
+      "\U000F0079", # mdi-battery (Hausbatterie)
+      "\U000F059C", # mdi-weather-sunset-down (Sonnenuntergang)
+      "\U000F05F1", # mdi-ev-plug (Ladeleistung)
+    ]
+
+  # Tiny MDI icons for info-table rows
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: icons_20
+    size: 20
+    bpp: 4
+    glyphs: [
+      "\U000F0A72", # mdi-solar-power      (PV heute, PV verbl., Solar %)
+      "\U000F059C", # mdi-weather-sunset-down (Sonnenuntergang)
+      "\U000F03B4", # mdi-percent           (Autarkie)
+      "\U000F08F3", # mdi-road-variant      (Reichweite)
+      "\U000F024D", # mdi-clock-outline     (Ladeende, Abfahrtzeit)
+      "\U000F0085", # mdi-battery-charging  (SOC Soll, Nachgeladen)
+      "\U000F01B5", # mdi-currency-eur      (Kosten)
+    ]
+
+#######################################################################
+#  Time sync from Home Assistant (needed for relative time calculations)
+#######################################################################
+time:
+  - platform: homeassistant
+    id: ha_time
+
+#######################################################################
+#  Online image – temperature graph fetched from home server
+#######################################################################
+http_request:
+  verify_ssl: false
+
+online_image:
+  - url: "http://${graph_server_ip}:8765/temp_graph.jpg"
+    id: temp_graph_img
+    format: JPEG
+    type: RGB565
+    update_interval: 2min
+    on_download_finished:
+      - lvgl.image.update:
+          id: temp_graph_widget
+          src: temp_graph_img
+
+#######################################################################
+#  Home Assistant sensors
+#######################################################################
+sensor:
+  # Raw outdoor temperature – unused directly, kept for lambda access
+  - platform: homeassistant
+    id: temp_aussen
+    entity_id: sensor.lufttemperatur_aussen
+    internal: true
+
+  # Outdoor temperature → drives the meter needle and text label
+  - platform: homeassistant
+    id: outdoor_temperature
+    entity_id: sensor.lufttemperatur_aussen
+    on_value:
+        - lvgl.indicator.update:
+            id: temperature_needle
+            value: !lambda return x * 10;  # needle scale is -100..400 = -10..40°C
+        - lvgl.label.update:
+            id: temperature_text
+            text:
+              format: "%.1f°C"
+              args: [ 'x' ]
+
+  # Hausbatterie SoC → bar (max 350 px) und Charge-Page Label
+  - platform: homeassistant
+    id: battery_soc
+    entity_id: sensor.evcc_battery_soc
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_charge_soc
+            text: !lambda |-
+              char buf[24];
+              snprintf(buf, sizeof(buf), "SoC: %d%%", (int)x);
+              return std::string(buf);
+        - lambda: |-
+            int fill_h = (int)(x * 3.5f);   // 100% → 350px
+            if (fill_h < 0) fill_h = 0;
+            if (fill_h > 350) fill_h = 350;
+            lv_obj_set_size(id(fill_hausbatt), 40, fill_h);
+            lv_obj_set_pos(id(fill_hausbatt), 0, 350 - fill_h);
+        - lvgl.label.update:
+            id: lbl_bar_hausbatt
+            text: !lambda |-
+              char buf[8];
+              snprintf(buf, sizeof(buf), "%d%%", (int)x);
+              return std::string(buf);
+
+  # Mercedes Reichweite → vertikale Bar (max 400 km → 350 px)
+  # und horizontale Bars auf Charge-Page (max 400 km → 395 px)
+  - platform: homeassistant
+    id: mercedes_range
+    entity_id: sensor.cw_mt_891_e_range_electric
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            int fill_h = (int)(x / 400.0f * 350.0f);
+            if (fill_h < 0) fill_h = 0;
+            if (fill_h > 350) fill_h = 350;
+            lv_obj_set_size(id(fill_mercedes), 40, fill_h);
+            lv_obj_set_pos(id(fill_mercedes), 0, 350 - fill_h);
+            int fill_w = (int)(x / 400.0f * 395.0f);
+            if (fill_w < 0) fill_w = 0;
+            if (fill_w > 395) fill_w = 395;
+            lv_obj_set_size(id(fill_range_plan), fill_w, 8);
+            lv_obj_set_size(id(fill_range_pv), fill_w, 8);
+        - lvgl.label.update:
+            id: lbl_bar_mercedes
+            text: !lambda |-
+              char buf[10];
+              snprintf(buf, sizeof(buf), "%d km", (int)x);
+              return std::string(buf);
+
+  # PV Tagesrestenergie → Info-Label
+  - platform: homeassistant
+    id: pv_tagesrestenergie
+    entity_id: sensor.pv_verbleibende_energie_heute
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_pv_restenergie
+            text: !lambda |-
+              char buf[16];
+              snprintf(buf, sizeof(buf), "%.1f kWh", x);
+              return std::string(buf);
+
+  # PV-Leistung → vertikale Bar (100% = 10 kW; entity reports W)
+  - platform: homeassistant
+    id: pv_power
+    entity_id: sensor.evcc_pv_power
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            float pct = x / 100.0f;
+            if (pct < 0.0f) pct = 0.0f;
+            if (pct > 100.0f) pct = 100.0f;
+            int fill_h = (int)(pct * 3.5f);   // 100% → 350px
+            lv_obj_set_size(id(fill_pv), 40, fill_h);
+            lv_obj_set_pos(id(fill_pv), 0, 350 - fill_h);
+        - lvgl.label.update:
+            id: lbl_bar_pv
+            text: !lambda |-
+              char buf[16];
+              snprintf(buf, sizeof(buf), "%d W", (int)x);
+              return std::string(buf);
+
+  # EV Ladeleistung → vertikale Bar (max 11 kW → 350 px)
+  # und horizontale Bars auf Charge-Page (max 11 kW → 395 px)
+  - platform: homeassistant
+    id: ev_charge_power
+    entity_id: sensor.evcc_e_auto_laden_charge_power
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            int fill_h = (int)(x / 11.0f * 350.0f);
+            if (fill_h < 0) fill_h = 0;
+            if (fill_h > 350) fill_h = 350;
+            lv_obj_set_size(id(fill_ev_charge), 40, fill_h);
+            lv_obj_set_pos(id(fill_ev_charge), 0, 350 - fill_h);
+            int fill_w = (int)(x / 11.0f * 395.0f);
+            if (fill_w < 0) fill_w = 0;
+            if (fill_w > 395) fill_w = 395;
+            lv_obj_set_size(id(fill_charge_plan), fill_w, 8);
+            lv_obj_set_size(id(fill_charge_pv), fill_w, 8);
+        - lvgl.label.update:
+            id: lbl_bar_ev_charge
+            text: !lambda |-
+              char buf[16];
+              snprintf(buf, sizeof(buf), "%.1f kW", x);
+              return std::string(buf);
+
+#######################################################################
+#  Home Assistant binary sensors
+#######################################################################
+binary_sensor:
+  - platform: homeassistant
+    id: evcc_ladeplan_aktiv
+    entity_id: input_boolean.evcc_ladeplan_aktiv
+    publish_initial_state: true
+    on_state:
+      then:
+        - lvgl.widget.update:
+            id: charge_60perc_7
+            state:
+              checked: !lambda 'return x;'
+
+#######################################################################
+#  Home Assistant text sensors
+#######################################################################
+text_sensor:
+  - platform: homeassistant
+    id: ts_remote_light
+    entity_id: light.remote_light
+    on_value:
+      then:
+        - lvgl.widget.update:
+            id: btn_lightbulb
+            state:
+              checked: !lambda return (0 == x.compare(std::string{"on"}));
+              disabled: !lambda return ((0 == x.compare(std::string{"unavailable"})) or (0 == x.compare(std::string{"unknown"})));
+        - lvgl.label.update:
+            id: lbl_lightbulb
+            text: !lambda |-
+              static char buf[10];
+              std::string icon;
+              if (0 == x.compare(std::string{"on"})) {
+                  icon = "\U000F0335";
+              } else {
+                  icon = "\U000F0336";
+              }
+              snprintf(buf, sizeof(buf), "%s", icon.c_str());
+              return buf;
+
+  - platform: homeassistant
+    id: zeit_bis_sonnenuntergang
+    entity_id: sensor.zeit_bis_sonnenuntergang
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_sonnenuntergang
+            text: !lambda return x;
+
+  - platform: homeassistant
+    id: evcc_mode
+    entity_id: select.evcc_e_auto_laden_mode
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_charge_mode
+            text: !lambda 'return "Modus: " + x;'
+        - lambda: |-
+            std::string mode = x;
+            lv_obj_t *btns[] = {id(btn_mode_pv), id(btn_mode_minpv), id(btn_mode_now), id(btn_mode_off)};
+            const char *modes[] = {"pv", "minpv", "now", "off"};
+            for (int i = 0; i < 4; i++) {
+              if (mode == modes[i]) {
+                lv_obj_add_state(btns[i], LV_STATE_CHECKED);
+              } else {
+                lv_obj_clear_state(btns[i], LV_STATE_CHECKED);
+              }
+            }
+            if (mode == "minpv") {
+              lv_obj_add_state(id(charge_PV_Start), LV_STATE_CHECKED);
+            } else {
+              lv_obj_clear_state(id(charge_PV_Start), LV_STATE_CHECKED);
+            }
+
+  - platform: homeassistant
+    id: ts_daily_pv_energy
+    entity_id: sensor.daily_pv_energy
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_daily_pv_energy
+            text: !lambda return x + " kWh";
+
+  - platform: homeassistant
+    id: ts_autarkie
+    entity_id: sensor.daily_self_suff_rate
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_autarkie
+            text: !lambda return x + " %";
+
+  - platform: homeassistant
+    id: ts_solar_pct
+    entity_id: sensor.evcc_stat_total_solar_percentage
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_solar_pct
+            text: !lambda |-
+              char buf[16];
+              snprintf(buf, sizeof(buf), "%.1f %%", atof(x.c_str()));
+              return std::string(buf);
+
+  - platform: homeassistant
+    id: ts_range_electric
+    entity_id: sensor.cw_mt_891_e_range_electric
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_range_electric
+            text: !lambda return x + " km";
+
+  - platform: homeassistant
+    id: ts_plan_end
+    entity_id: sensor.cw_mt_891_e_end_of_charge
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_plan_end
+            text: !lambda |-
+              if (x == "unknown" || x.empty()) return std::string("-");
+              struct tm tm = {};
+              strptime(x.c_str(), "%Y-%m-%dT%H:%M:%S", &tm);
+              time_t target = mktime(&tm);
+              auto now = id(ha_time).now();
+              if (!now.is_valid()) return std::string("--");
+              time_t now_t = now.timestamp;
+              int diff_h = (int)((target - now_t) / 3600);
+              if (diff_h < 0) diff_h = 0;
+              char buf[16];
+              snprintf(buf, sizeof(buf), "in %dh", diff_h);
+              return std::string(buf);
+
+  - platform: homeassistant
+    id: ts_plan_soc
+    entity_id: sensor.evcc_e_auto_laden_effective_plan_soc
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_plan_soc
+            text: !lambda return x + " %";
+
+  - platform: homeassistant
+    id: ts_departure
+    entity_id: sensor.cw_mt_891_e_departure_time
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_departure
+            text: !lambda 'return x == "unknown" ? "-" : x;'
+
+  - platform: homeassistant
+    id: ts_energy_cost
+    entity_id: sensor.nachgeladen_energie_kosten
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_energy_cost
+            text: !lambda return x + " €" + "/100km";
+
+  - platform: homeassistant
+    id: ts_sess_range
+    entity_id: sensor.nachgeladene_reichweite
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_sess_range
+            text: !lambda return x + " km";
+
+  - platform: homeassistant
+    id: ts_sess_price
+    entity_id: sensor.evcc_e_auto_laden_session_price
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_sess_price
+            text: !lambda |-
+              char buf[16];
+              snprintf(buf, sizeof(buf), "%.1f €", atof(x.c_str()));
+              return std::string(buf);
+
+  - platform: homeassistant
+    id: ts_charged_energy
+    entity_id: sensor.evcc_e_auto_laden_charged_energy
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_charged_energy
+            text: !lambda |-
+              char buf[16];
+              snprintf(buf, sizeof(buf), "%.1f kWh", atof(x.c_str()));
+              return std::string(buf);
+
+#######################################################################
+#  LVGL – UI definition (skaliert für 800x480)
+#######################################################################
+lvgl:
+  # --- Global theme applied to every widget of each type ---
+  theme:
+    label:
+      text_font: montserrat_18
+    button:
+      bg_color: 0x2F8CD8
+      bg_grad_color: 0x005782
+      bg_grad_dir: VER
+      bg_opa: COVER
+      border_color: 0x0077b3
+      border_width: 1
+      text_color: 0xFFFFFF
+      pressed:
+        bg_color: 0x006699
+        bg_grad_color: 0x00334d
+      checked:
+        bg_color: 0x1d5f96
+        bg_grad_color: 0x03324A
+        text_color: 0xfff300
+    buttonmatrix:
+      bg_opa: TRANSP
+      border_color: 0x0077b3
+      border_width: 0
+      text_color: 0xFFFFFF
+      pad_all: 0
+      items:
+        bg_color: 0x2F8CD8
+        bg_grad_color: 0x005782
+        bg_grad_dir: VER
+        bg_opa: COVER
+        border_color: 0x0077b3
+        border_width: 1
+        text_color: 0xFFFFFF
+        text_font: montserrat_18
+        pressed:
+          bg_color: 0x006699
+          bg_grad_color: 0x00334d
+        checked:
+          bg_color: 0x1d5f96
+          bg_grad_color: 0x03324A
+          text_color: 0x005580
+    switch:
+      bg_color: 0xC0C0C0
+      bg_grad_color: 0xb0b0b0
+      bg_grad_dir: VER
+      bg_opa: COVER
+      checked:
+        bg_color: 0x1d5f96
+        bg_grad_color: 0x03324A
+        bg_grad_dir: VER
+        bg_opa: COVER
+      knob:
+        bg_color: 0xFFFFFF
+        bg_grad_color: 0xC0C0C0
+        bg_grad_dir: VER
+        bg_opa: COVER
+    slider:
+      border_width: 1
+      border_opa: 15%
+      bg_color: 0xcccaca
+      bg_opa: 15%
+      indicator:
+        bg_color: 0x1d5f96
+        bg_grad_color: 0x03324A
+        bg_grad_dir: VER
+        bg_opa: COVER
+      knob:
+        bg_color: 0x2F8CD8
+        bg_grad_color: 0x005782
+        bg_grad_dir: VER
+        bg_opa: COVER
+        border_color: 0x0077b3
+        border_width: 1
+        text_color: 0xFFFFFF
+
+  # --- Reusable style for page header bars and the bottom nav bar ---
+  style_definitions:
+      - id: header_footer
+        bg_color: 0x252D38
+        bg_grad_color: 0x1C2128
+        bg_grad_dir: VER
+        bg_opa: COVER
+        border_opa: TRANSP
+        radius: 0
+        pad_all: 0
+        pad_row: 0
+        pad_column: 0
+        border_color: 0x3A4250
+        text_color: 0xCCCCCC
+        width: 100%
+        height: 30
+
+  # --- Persistent overlay: bottom navigation bar (always visible) ---
+  top_layer:
+    widgets:
+      - buttonmatrix:
+          align: bottom_mid
+          styles: header_footer
+          pad_all: 0
+          outline_width: 0
+          id: top_layer
+          items:
+            styles: header_footer
+          rows:
+            - buttons:
+                - id: page_prev
+                  text: "Automationen"
+                  on_press:
+                    then:
+                      lvgl.page.show: Licht
+                - id: page_home
+                  text: ""   # home icon
+                  on_press:
+                    then:
+                      lvgl.page.show: main_page
+                - id: page_next
+                  text: "Laden"
+                  on_press:
+                    then:
+                      lvgl.page.show: Charge
+
+  pages:
+    ###################################################################
+    #  Page 1 – Hauptseite (800x480)
+    #  Layout (y=30..450 nutzbar):
+    #    Bars:        x=10..200 (4× w=40, gap 10)
+    #    Thermometer: x=210..410, y=40..240
+    #    Solar-Tab.:  x=420..790, y=35..245
+    #    Graph:       x=210..790, y=255..440
+    ###################################################################
+    - id: main_page
+      bg_color: 0x1C2128
+      bg_opa: COVER
+      widgets:
+        - obj:
+            align: TOP_MID
+            styles: header_footer
+            widgets:
+              - label:
+                  text: "Hauptseite"
+                  align: CENTER
+                  text_align: CENTER
+                  text_color: 0xFFFFFF
+
+        # Thermometer – Panel-Pixel sind tatsächlich breiter als hoch
+        # → Width kleiner und Height größer machen, damit es rund erscheint.
+        - meter:
+            x: 215
+            y: 40
+            height: 200
+            width: 190
+            bg_color: 0x1C2128
+            bg_opa: COVER
+            border_width: 0
+            border_opa: TRANSP
+            text_color: 0xCCCCCC
+            scales:
+              - range_from: -100
+                range_to: 400
+                angle_range: 240
+                rotation: 150
+                indicators:
+                  - line:
+                      id: temperature_needle
+                      width: 2
+                      color: 0xFF0000
+                      r_mod: -4
+              - range_from: -10
+                range_to: 40
+                angle_range: 240
+                rotation: 150
+                ticks:
+                  width: 1
+                  count: 51
+                  length: 8
+                  color: 0x888888
+                  major:
+                    stride: 5
+                    width: 2
+                    length: 8
+                    color: 0xCCCCCC
+                    label_gap: 6
+                indicators:
+                  - tick_style:
+                      start_value: -10
+                      end_value: 40
+                      color_start: 0x0000bd
+                      color_end: 0xbd0000
+                      width: 1
+            widgets:
+              - label:
+                  id: temperature_text
+                  text: "-.-°C"
+                  align: CENTER
+                  y: 48
+                  text_font: montserrat_24
+                  text_color: 0xFFFFFF
+              - label:
+                  text: "Outdoor"
+                  align: CENTER
+                  y: 72
+                  text_font: montserrat_16
+                  text_color: 0xAAAAAA
+
+        # --- Solar-Info-Tabelle (rechts) ---
+        - obj:
+            x: 420
+            y: 35
+            width: 370
+            height: 210
+            bg_color: 0x1C2128
+            bg_opa: COVER
+            border_color: 0x3A4250
+            border_width: 1
+            radius: 4
+            pad_all: 10
+            scrollbar_mode: "off"
+            widgets:
+              - label:
+                  x: 0
+                  y: 0
+                  width: 350
+                  text: "Solar"
+                  text_font: montserrat_16
+                  text_color: 0x4A7FB5
+              - label:
+                  x: 0
+                  y: 26
+                  width: 24
+                  text: "\U000F0A72"
+                  text_font: icons_20
+                  text_color: 0xFFB300
+              - label:
+                  x: 28
+                  y: 24
+                  width: 140
+                  text: "PV heute"
+                  text_font: montserrat_16
+                  text_color: 0xAAAAAA
+              - label:
+                  id: lbl_daily_pv_energy
+                  x: 170
+                  y: 22
+                  width: 180
+                  text: "--"
+                  text_font: montserrat_28
+                  text_color: 0xDDDDDD
+                  text_align: RIGHT
+              - label:
+                  x: 0
+                  y: 71
+                  width: 24
+                  text: "\U000F0A72"
+                  text_font: icons_20
+                  text_color: 0xFFB300
+              - label:
+                  x: 28
+                  y: 69
+                  width: 140
+                  text: "PV verbl."
+                  text_font: montserrat_16
+                  text_color: 0xAAAAAA
+              - label:
+                  id: lbl_pv_restenergie
+                  x: 170
+                  y: 67
+                  width: 180
+                  text: "--"
+                  text_font: montserrat_28
+                  text_color: 0xDDDDDD
+                  text_align: RIGHT
+              - label:
+                  x: 0
+                  y: 116
+                  width: 24
+                  text: "\U000F03B4"
+                  text_font: icons_20
+                  text_color: 0x66BB6A
+              - label:
+                  x: 28
+                  y: 114
+                  width: 140
+                  text: "Autarkie"
+                  text_font: montserrat_16
+                  text_color: 0xAAAAAA
+              - label:
+                  id: lbl_autarkie
+                  x: 170
+                  y: 112
+                  width: 180
+                  text: "--"
+                  text_font: montserrat_28
+                  text_color: 0xDDDDDD
+                  text_align: RIGHT
+              - label:
+                  x: 0
+                  y: 161
+                  width: 24
+                  text: "\U000F059C"
+                  text_font: icons_20
+                  text_color: 0xFF7043
+              - label:
+                  x: 28
+                  y: 159
+                  width: 140
+                  text: "Sonnenuntg."
+                  text_font: montserrat_16
+                  text_color: 0xAAAAAA
+              - label:
+                  id: lbl_sonnenuntergang
+                  x: 170
+                  y: 157
+                  width: 180
+                  text: "--"
+                  text_font: montserrat_28
+                  text_color: 0xDDDDDD
+                  text_align: RIGHT
+
+        # Temperaturverlauf-Graph (JPEG vom Homeserver, unterhalb des Thermometers)
+        - image:
+            id: temp_graph_widget
+            src: temp_graph_img
+            x: 210
+            y: 255
+            width: 580
+            height: 185
+
+        # --- Vertikale Status-Balken (linke Seite) ---
+        # Container y=35, height=350 → fill_h = pct * 3.5 px
+        # Bar 1: Mercedes Reichweite (blau) – x=10
+        - obj:
+            x: 10
+            y: 35
+            width: 40
+            height: 350
+            bg_color: 0x1C2128
+            bg_opa: COVER
+            border_width: 1
+            border_color: 0x2F8CD8
+            radius: 4
+            pad_all: 0
+            scrollbar_mode: "off"
+            widgets:
+              - obj:
+                  id: fill_mercedes
+                  x: 0
+                  y: 350
+                  width: 40
+                  height: 0
+                  bg_color: 0x2F8CD8
+                  bg_opa: COVER
+                  border_width: 0
+                  radius: 4
+        - label:
+            id: lbl_bar_mercedes
+            x: 10
+            y: 388
+            width: 40
+            text: "-- km"
+            text_align: CENTER
+            text_font: montserrat_14
+            text_color: 0xCCCCCC
+        - label:
+            x: 10
+            y: 415
+            width: 40
+            text: "\U000F010B"
+            text_align: CENTER
+            text_font: icons_30
+            text_color: 0xAAAAAA
+
+        # Bar 2: PV Leistung (orange, 100% = 10 kW) – x=60
+        - obj:
+            x: 60
+            y: 35
+            width: 40
+            height: 350
+            bg_color: 0x1C2128
+            bg_opa: COVER
+            border_width: 1
+            border_color: 0xFF8C00
+            radius: 4
+            pad_all: 0
+            scrollbar_mode: "off"
+            widgets:
+              - obj:
+                  id: fill_pv
+                  x: 0
+                  y: 350
+                  width: 40
+                  height: 0
+                  bg_color: 0xFF8C00
+                  bg_opa: COVER
+                  border_width: 0
+                  radius: 4
+        - label:
+            id: lbl_bar_pv
+            x: 60
+            y: 388
+            width: 40
+            text: "-- W"
+            text_align: CENTER
+            text_font: montserrat_14
+            text_color: 0xCCCCCC
+        - label:
+            x: 60
+            y: 415
+            width: 40
+            text: "\U000F0A72"
+            text_align: CENTER
+            text_font: icons_30
+            text_color: 0xAAAAAA
+
+        # Bar 3: Hausbatterie SoC (grün) – x=110
+        - obj:
+            x: 110
+            y: 35
+            width: 40
+            height: 350
+            bg_color: 0x1C2128
+            bg_opa: COVER
+            border_width: 1
+            border_color: 0x00AA00
+            radius: 4
+            pad_all: 0
+            scrollbar_mode: "off"
+            widgets:
+              - obj:
+                  id: fill_hausbatt
+                  x: 0
+                  y: 350
+                  width: 40
+                  height: 0
+                  bg_color: 0x00AA00
+                  bg_opa: COVER
+                  border_width: 0
+                  radius: 4
+        - label:
+            id: lbl_bar_hausbatt
+            x: 110
+            y: 388
+            width: 40
+            text: "--%"
+            text_align: CENTER
+            text_font: montserrat_14
+            text_color: 0xCCCCCC
+        - label:
+            x: 110
+            y: 415
+            width: 40
+            text: "\U000F0079"
+            text_align: CENTER
+            text_font: icons_30
+            text_color: 0xAAAAAA
+
+        # Bar 4: EV Ladeleistung (dunkelgrün, max 11 kW) – x=160
+        - obj:
+            x: 160
+            y: 35
+            width: 40
+            height: 350
+            bg_color: 0x1C2128
+            bg_opa: COVER
+            border_width: 1
+            border_color: 0x0D5C2A
+            radius: 4
+            pad_all: 0
+            scrollbar_mode: "off"
+            widgets:
+              - obj:
+                  id: fill_ev_charge
+                  x: 0
+                  y: 350
+                  width: 40
+                  height: 0
+                  bg_color: 0x0D5C2A
+                  bg_opa: COVER
+                  border_width: 0
+                  radius: 4
+        # 1-phase marker at 3.6 kW = 3.6/11 * 350 = 114 px from bottom → y=271
+        - obj:
+            x: 160
+            y: 271
+            width: 40
+            height: 2
+            bg_color: 0xFFD700
+            bg_opa: COVER
+            border_width: 0
+            radius: 0
+            pad_all: 0
+        - label:
+            id: lbl_bar_ev_charge
+            x: 160
+            y: 388
+            width: 40
+            text: "-- kW"
+            text_align: CENTER
+            text_font: montserrat_14
+            text_color: 0xCCCCCC
+        - label:
+            x: 160
+            y: 415
+            width: 40
+            text: "\U000F05F1"
+            text_align: CENTER
+            text_font: icons_30
+            text_color: 0xAAAAAA
+
+    ###################################################################
+    #  Page 2 – Licht
+    ###################################################################
+    - id: Licht
+      bg_color: 0x1C2128
+      bg_opa: COVER
+      widgets:
+        - obj:
+            align: TOP_MID
+            styles: header_footer
+            widgets:
+              - label:
+                  text: "Licht"
+                  align: CENTER
+                  text_align: CENTER
+                  text_color: 0xFFFFFF
+
+        - button:
+            x: 80
+            y: 80
+            width: 120
+            height: 120
+            checkable: true
+            id: btn_lightbulb
+            widgets:
+              - label:
+                  id: lbl_lightbulb
+                  align: CENTER
+                  y: -15
+                  text_font: icons_100
+                  text: "\U000F0336"
+              - label:
+                  text: "Buerolicht"
+                  align: CENTER
+                  y: 45
+                  text_font: montserrat_18
+            on_short_click:
+              - homeassistant.action:
+                  action: light.toggle
+                  data:
+                    entity_id: light.buerolicht
+
+    ###################################################################
+    #  Page 3 – Charge (800x480)
+    #  Layout (y=30..450 nutzbar):
+    #    Mode-Buttons:    4× w=95 h=60, x=10/110/210/310, y=45
+    #    Mode/SoC Label:  y=115
+    #    Plan-Button:     x=10, y=150, w=395, h=70
+    #    PV-Start:        x=10, y=240, w=395, h=70
+    #    EV-Tabelle:      x=420, y=35, w=370, h=370
+    ###################################################################
+    - id: Charge
+      bg_color: 0x1C2128
+      bg_opa: COVER
+      widgets:
+        - obj:
+            align: TOP_MID
+            styles: header_footer
+            widgets:
+              - label:
+                  text: "Charge"
+                  align: CENTER
+                  text_align: CENTER
+                  text_color: 0xFFFFFF
+
+###  ----------------------- Lademodus-Buttons -----------------------
+        - button:
+            id: btn_mode_pv
+            x: 10
+            y: 45
+            width: 95
+            height: 60
+            checkable: true
+            checked:
+              bg_color: 0x00AA00
+              border_color: 0x00AA00
+              bg_opa: COVER
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "PV"
+                  text_font: montserrat_20
+            on_short_click:
+              - homeassistant.action:
+                  action: script.evcc_lademodus
+                  data:
+                    modus: "pv"
+        - button:
+            id: btn_mode_minpv
+            x: 110
+            y: 45
+            width: 95
+            height: 60
+            checkable: true
+            checked:
+              bg_color: 0x00AA00
+              border_color: 0x00AA00
+              bg_opa: COVER
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "Min+PV"
+                  text_font: montserrat_18
+            on_short_click:
+              - homeassistant.action:
+                  action: script.evcc_lademodus
+                  data:
+                    modus: "minpv"
+        - button:
+            id: btn_mode_now
+            x: 210
+            y: 45
+            width: 95
+            height: 60
+            checkable: true
+            checked:
+              bg_color: 0x00AA00
+              border_color: 0x00AA00
+              bg_opa: COVER
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "Schnell"
+                  text_font: montserrat_18
+            on_short_click:
+              - homeassistant.action:
+                  action: script.evcc_lademodus
+                  data:
+                    modus: "now"
+        - button:
+            id: btn_mode_off
+            x: 310
+            y: 45
+            width: 95
+            height: 60
+            checkable: true
+            checked:
+              bg_color: 0x00AA00
+              border_color: 0x00AA00
+              bg_opa: COVER
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "Aus"
+                  text_font: montserrat_20
+            on_short_click:
+              - homeassistant.action:
+                  action: script.evcc_lademodus
+                  data:
+                    modus: "off"
+
+        # Current mode + SoC display
+        - label:
+            id: lbl_charge_mode
+            x: 10
+            y: 115
+            width: 195
+            text: "Modus: --"
+            text_font: montserrat_18
+            text_color: 0x9AB0C8
+        - label:
+            id: lbl_charge_soc
+            x: 210
+            y: 115
+            width: 195
+            text: "SoC: --"
+            text_font: montserrat_18
+            text_color: 0xCCCCCC
+
+###  ----------------------- Ladeplan-Button -----------------------
+        - button:
+            x: 10
+            y: 150
+            width: 395
+            height: 70
+            checkable: true
+            id: charge_60perc_7
+            bg_opa: COVER
+            checked:
+              bg_color: 0x00AA00
+              border_color: 0x00AA00
+              bg_opa: COVER
+            widgets:
+              - label:
+                  id: charge_60perc_7_icon
+                  align: LEFT_MID
+                  x: 10
+                  text_font: icons_30
+                  text: "\U000F05F1"
+              - label:
+                  text: "60% bis 7:00"
+                  align: CENTER
+                  text_font: montserrat_20
+            on_short_click:
+              - if:
+                  condition:
+                    lambda: 'return id(evcc_ladeplan_aktiv).state;'
+                  then:
+                    - homeassistant.action:
+                        action: script.evcc_ladeplan_loeschen
+                  else:
+                    - homeassistant.action:
+                        action: script.evcc_ladeplan_morgen
+
+###  ----------------------- PV-Start Button -----------------------
+        - button:
+            id: charge_PV_Start
+            x: 10
+            y: 240
+            width: 395
+            height: 70
+            checkable: false
+            bg_opa: COVER
+            checked:
+              bg_color: 0x00AA00
+              border_color: 0x00AA00
+              bg_opa: COVER
+            widgets:
+              - label:
+                  align: LEFT_MID
+                  x: 10
+                  text_font: icons_30
+                  text: "\U000F0A72"
+              - label:
+                  text: "PV-Start"
+                  align: CENTER
+                  text_font: montserrat_20
+            on_short_click:
+              - homeassistant.action:
+                  action: script.evcc_minpv_aktivieren
+
+        # Charge power bars (top edge of buttons, dark green, max 11kW → 395px)
+        - obj:
+            id: fill_charge_plan
+            x: 10
+            y: 150
+            width: 0
+            height: 8
+            bg_color: 0x0D5C2A
+            bg_opa: COVER
+            border_width: 0
+            radius: 0
+        - obj:
+            id: fill_charge_pv
+            x: 10
+            y: 240
+            width: 0
+            height: 8
+            bg_color: 0x0D5C2A
+            bg_opa: COVER
+            border_width: 0
+            radius: 0
+        # 1-phase marker at 3.6 kW (3.6/11 * 395 = 129 px → x = 10+129 = 139)
+        - obj:
+            x: 139
+            y: 150
+            width: 2
+            height: 8
+            bg_color: 0xFFFF00
+            bg_opa: COVER
+            border_width: 0
+            radius: 0
+        - obj:
+            x: 139
+            y: 240
+            width: 2
+            height: 8
+            bg_color: 0xFFFF00
+            bg_opa: COVER
+            border_width: 0
+            radius: 0
+
+        # Range fill bars (bottom edge of buttons, orange, max 400km → 395px)
+        - obj:
+            id: fill_range_plan
+            x: 10
+            y: 212    # 150 + 70 - 8
+            width: 0
+            height: 8
+            bg_color: 0xFF9500
+            bg_opa: COVER
+            border_width: 0
+            radius: 0
+        - obj:
+            id: fill_range_pv
+            x: 10
+            y: 302    # 240 + 70 - 8
+            width: 0
+            height: 8
+            bg_color: 0xFF9500
+            bg_opa: COVER
+            border_width: 0
+            radius: 0
+
+        # --- EV Info-Tabelle rechts (kompakter mit montserrat_22 Werten) ---
+        - obj:
+            x: 420
+            y: 35
+            width: 370
+            height: 370
+            bg_color: 0x1C2128
+            bg_opa: COVER
+            border_color: 0x3A4250
+            border_width: 1
+            radius: 4
+            pad_all: 5
+            scrollbar_mode: "off"
+            widgets:
+              - label:
+                  x: 0
+                  y: 0
+                  width: 350
+                  text: "EV"
+                  text_font: montserrat_16
+                  text_color: 0x4A7FB5
+              # Row 1 – Solar %
+              - label:
+                  x: 0
+                  y: 24
+                  width: 24
+                  text: "\U000F0A72"
+                  text_font: icons_20
+                  text_color: 0xFFB300
+              - label:
+                  x: 28
+                  y: 24
+                  width: 140
+                  text: "Solar %"
+                  text_font: montserrat_14
+                  text_color: 0xAAAAAA
+              - label:
+                  id: lbl_solar_pct
+                  x: 170
+                  y: 22
+                  width: 190
+                  text: "--"
+                  text_font: montserrat_22
+                  text_color: 0xDDDDDD
+                  text_align: RIGHT
+              # Row 2 – Reichweite
+              - label:
+                  x: 0
+                  y: 62
+                  width: 24
+                  text: "\U000F08F3"
+                  text_font: icons_20
+                  text_color: 0x42A5F5
+              - label:
+                  x: 28
+                  y: 62
+                  width: 140
+                  text: "Reichweite"
+                  text_font: montserrat_14
+                  text_color: 0xAAAAAA
+              - label:
+                  id: lbl_range_electric
+                  x: 170
+                  y: 60
+                  width: 190
+                  text: "--"
+                  text_font: montserrat_22
+                  text_color: 0xDDDDDD
+                  text_align: RIGHT
+              # Row 3 – Ladeende
+              - label:
+                  x: 0
+                  y: 100
+                  width: 24
+                  text: "\U000F024D"
+                  text_font: icons_20
+                  text_color: 0x78909C
+              - label:
+                  x: 28
+                  y: 100
+                  width: 140
+                  text: "Ladeende"
+                  text_font: montserrat_14
+                  text_color: 0xAAAAAA
+              - label:
+                  id: lbl_plan_end
+                  x: 170
+                  y: 98
+                  width: 190
+                  text: "--"
+                  text_font: montserrat_22
+                  text_color: 0xDDDDDD
+                  text_align: RIGHT
+              # Row 4 – SOC Soll
+              - label:
+                  x: 0
+                  y: 138
+                  width: 24
+                  text: "\U000F0085"
+                  text_font: icons_20
+                  text_color: 0x66BB6A
+              - label:
+                  x: 28
+                  y: 138
+                  width: 140
+                  text: "SOC Soll"
+                  text_font: montserrat_14
+                  text_color: 0xAAAAAA
+              - label:
+                  id: lbl_plan_soc
+                  x: 170
+                  y: 136
+                  width: 190
+                  text: "--"
+                  text_font: montserrat_22
+                  text_color: 0xDDDDDD
+                  text_align: RIGHT
+              # Row 5 – Abfahrtzeit
+              - label:
+                  x: 0
+                  y: 176
+                  width: 24
+                  text: "\U000F024D"
+                  text_font: icons_20
+                  text_color: 0x78909C
+              - label:
+                  x: 28
+                  y: 176
+                  width: 140
+                  text: "Abfahrtzeit"
+                  text_font: montserrat_14
+                  text_color: 0xAAAAAA
+              - label:
+                  id: lbl_departure
+                  x: 170
+                  y: 174
+                  width: 190
+                  text: "--"
+                  text_font: montserrat_22
+                  text_color: 0xDDDDDD
+                  text_align: RIGHT
+              # Row 6 – Fahrenergiekosten
+              - label:
+                  x: 0
+                  y: 214
+                  width: 24
+                  text: "\U000F01B5"
+                  text_font: icons_20
+                  text_color: 0xEF5350
+              - label:
+                  x: 28
+                  y: 214
+                  width: 140
+                  text: "Fahrenergiekosten"
+                  text_font: montserrat_14
+                  text_color: 0xAAAAAA
+              - label:
+                  id: lbl_energy_cost
+                  x: 170
+                  y: 212
+                  width: 190
+                  text: "--"
+                  text_font: montserrat_22_ext
+                  text_color: 0xDDDDDD
+                  text_align: RIGHT
+              # Row 7 – Nachgel. Reichweite
+              - label:
+                  x: 0
+                  y: 252
+                  width: 24
+                  text: "\U000F08F3"
+                  text_font: icons_20
+                  text_color: 0x42A5F5
+              - label:
+                  x: 28
+                  y: 252
+                  width: 140
+                  text: "Nachgel. Reichw."
+                  text_font: montserrat_14
+                  text_color: 0xAAAAAA
+              - label:
+                  id: lbl_sess_range
+                  x: 170
+                  y: 250
+                  width: 190
+                  text: "--"
+                  text_font: montserrat_22
+                  text_color: 0xDDDDDD
+                  text_align: RIGHT
+              # Row 8 – Sess. Kosten
+              - label:
+                  x: 0
+                  y: 290
+                  width: 24
+                  text: "\U000F01B5"
+                  text_font: icons_20
+                  text_color: 0xEF5350
+              - label:
+                  x: 28
+                  y: 290
+                  width: 140
+                  text: "Sess. Kosten"
+                  text_font: montserrat_14
+                  text_color: 0xAAAAAA
+              - label:
+                  id: lbl_sess_price
+                  x: 170
+                  y: 288
+                  width: 190
+                  text: "--"
+                  text_font: montserrat_22_ext
+                  text_color: 0xDDDDDD
+                  text_align: RIGHT
+              # Row 9 – Nachgeladen
+              - label:
+                  x: 0
+                  y: 328
+                  width: 24
+                  text: "\U000F0085"
+                  text_font: icons_20
+                  text_color: 0x66BB6A
+              - label:
+                  x: 28
+                  y: 328
+                  width: 140
+                  text: "Nachgeladen"
+                  text_font: montserrat_14
+                  text_color: 0xAAAAAA
+              - label:
+                  id: lbl_charged_energy
+                  x: 170
+                  y: 326
+                  width: 190
+                  text: "--"
+                  text_font: montserrat_22
+                  text_color: 0xDDDDDD
+                  text_align: RIGHT

@@ -1,0 +1,9 @@
+# Gitignore settings for ESPHome
+/.esphome/
+/secrets.yaml
+.DS_Store
+.idea/
+.vscode/
+.claude/
+log.txt
+*.numbers
