@@ -22,9 +22,11 @@ Das gesamte Hardware-Setup wird via [inytar/waveshare-esp32-s3-touch-lcd-7-espho
 
 | Seite       | Inhalt                                                                        |
 | ----------- | ----------------------------------------------------------------------------- |
-| `main_page` | Thermometer (Außentemperatur), 4 vertikale Status-Bars, Solar-Tabelle, Graph  |
+| `main_page` | Header mit KW/Datum/Uhrzeit, Thermometer, 4 vertikale Status-Bars, Solar-Tabelle, Graph |
 | `Licht`     | Bürolicht-Toggle                                                              |
 | `Charge`    | EV-Lademodus (4 Buttons) + Plan/PV-Start-Buttons + EV-Info-Tabelle (9 Zeilen) |
+
+**Header der Hauptseite:** Zeigt Kalenderwoche, Datum (`dd.mm.yy`) und Uhrzeit (`hh:mm`) im Format `KW18    -    04.05.26    -    23:01`. Update jede volle Minute via `time.on_time` und einmalig sofort nach dem ersten HA-Time-Sync via `on_time_sync`. Schrift `montserrat_22`, Header-Höhe 34 px (auf der `main_page` per Override; andere Pages bleiben bei den Default-30 px).
 
 Navigation via Buttonmatrix am unteren Rand (`Automationen` / Home-Icon / `Laden`).
 

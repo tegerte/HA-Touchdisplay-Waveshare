@@ -151,6 +151,25 @@ font:
 time:
   - platform: homeassistant
     id: ha_time
+    on_time:
+      # Update Header-Label mit aktuellem Datum/Uhrzeit jede Minute
+      - seconds: 0
+        then:
+          - lvgl.label.update:
+              id: lbl_header_main
+              text: !lambda |-
+                auto t = id(ha_time).now();
+                if (!t.is_valid()) return std::string("KW--    -    --.--.--    -    --:--");
+                return t.strftime("KW%V    -    %d.%m.%y    -    %H:%M");
+    on_time_sync:
+      # Initial-Update sobald Zeit von HA synchronisiert wird
+      - then:
+          - lvgl.label.update:
+              id: lbl_header_main
+              text: !lambda |-
+                auto t = id(ha_time).now();
+                if (!t.is_valid()) return std::string("KW--    -    --.--.--    -    --:--");
+                return t.strftime("KW%V    -    %d.%m.%y    -    %H:%M");
 
 #######################################################################
 #  Online image – temperature graph fetched from home server
@@ -656,11 +675,14 @@ lvgl:
         - obj:
             align: TOP_MID
             styles: header_footer
+            height: 34   # override (Default 30) damit montserrat_22 sauber reinpasst
             widgets:
               - label:
-                  text: "Hauptseite"
+                  id: lbl_header_main
+                  text: "KW--    -    --.--.--    -    --:--"
                   align: CENTER
                   text_align: CENTER
+                  text_font: montserrat_22
                   text_color: 0xFFFFFF
 
         # Thermometer – Panel-Pixel sind tatsächlich breiter als hoch

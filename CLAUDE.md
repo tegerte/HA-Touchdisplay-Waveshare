@@ -43,6 +43,7 @@ Alles in **`ha_7zoll_waveshare_esp32-s3-touch.yaml`**.
 
 **main_page Layout (800×480, y=30..450 nutzbar):**
 
+- Header (TOP_MID, height=**34** override statt Style-Default 30): Label `lbl_header_main`, montserrat_22, zeigt `KW%V    -    %d.%m.%y    -    %H:%M` (z. B. `KW18    -    04.05.26    -    23:01`); Update jede volle Minute über `time.on_time: seconds: 0` plus einmalig sofort nach erstem `on_time_sync`. Default-Text `KW--    -    --.--.--    -    --:--` solange `ha_time` noch nicht gesynced ist
 - 4 vertikale Bars links: w=40, h=350, x=10/60/110/160
   - Container y=35..385, Value-Label (mont_14) bei y=388, Icon-Label (icons_30) bei y=415
   - Lambdas: Faktor 3.5 für % (max 350 px), `/400.0f * 350.0f` für Mercedes-km, `/11.0f * 350.0f` für EV-kW
