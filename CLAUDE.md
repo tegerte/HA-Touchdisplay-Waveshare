@@ -50,7 +50,7 @@ Alles in **`ha_7zoll_waveshare_esp32-s3-touch.yaml`**.
   - Bar 4 (EV) hat gelben 1-Phasen-Marker bei y=271 (= 3.6 kW / 11 kW × 350 = 114 px vom Boden)
 - Thermometer: x=215, y=40, **width=190 / height=200** (Pixel-Aspekt-Korrektur — Panel-Pixel sind breiter als hoch), kein Border
 - Solar-Tabelle: x=420, y=35, w=370, h=210 — montserrat_28 Werte, montserrat_16 Labels
-- Graph: x=210, y=255, w=580, h=185 (JPEG vom Homeserver, gleiche Pipeline wie MAtouch)
+- Graph: x=210, y=255, w=580, h=185 (JPEG vom Homeserver, eigener `/temp_graph_580.jpg`-Endpoint, MAtouch nutzt `/temp_graph.jpg` parallel)
 
 **Charge Layout:**
 

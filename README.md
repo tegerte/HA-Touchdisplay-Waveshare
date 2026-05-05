@@ -20,11 +20,11 @@ Das gesamte Hardware-Setup wird via [inytar/waveshare-esp32-s3-touch-lcd-7-espho
 
 ## UI-Seiten
 
-| Seite       | Inhalt                                                                        |
-| ----------- | ----------------------------------------------------------------------------- |
+| Seite       | Inhalt                                                                                  |
+| ----------- | --------------------------------------------------------------------------------------- |
 | `main_page` | Header mit KW/Datum/Uhrzeit, Thermometer, 4 vertikale Status-Bars, Solar-Tabelle, Graph |
-| `Licht`     | Bürolicht-Toggle                                                              |
-| `Charge`    | EV-Lademodus (4 Buttons) + Plan/PV-Start-Buttons + EV-Info-Tabelle (9 Zeilen) |
+| `Licht`     | Bürolicht-Toggle                                                                        |
+| `Charge`    | EV-Lademodus (4 Buttons) + Plan/PV-Start-Buttons + EV-Info-Tabelle (9 Zeilen)           |
 
 **Header der Hauptseite:** Zeigt Kalenderwoche, Datum (`dd.mm.yy`) und Uhrzeit (`hh:mm`) im Format `KW18    -    04.05.26    -    23:01`. Update jede volle Minute via `time.on_time` und einmalig sofort nach dem ersten HA-Time-Sync via `on_time_sync`. Schrift `montserrat_22`, Header-Höhe 34 px (auf der `main_page` per Override; andere Pages bleiben bei den Default-30 px).
 
@@ -34,12 +34,12 @@ Navigation via Buttonmatrix am unteren Rand (`Automationen` / Home-Icon / `Laden
 
 Vier vertikale Bars, je w=40 / h=350 px:
 
-| Bar  | Farbe        | Sensor                                  | Skala  |
-| ---- | ------------ | --------------------------------------- | ------ |
-| 1    | Blau         | EV Reichweite (`mercedes_range`)        | 400 km |
-| 2    | Orange       | PV-Leistung (`evcc_pv_power`)           | 10 kW  |
-| 3    | Grün         | Hausbatterie SoC (`evcc_battery_soc`)   | 100 %  |
-| 4    | Dunkelgrün   | EV-Ladeleistung (`evcc_e_auto_laden_charge_power`) | 11 kW  |
+| Bar | Farbe      | Sensor                                             | Skala  |
+| --- | ---------- | -------------------------------------------------- | ------ |
+| 1   | Blau       | EV Reichweite (`mercedes_range`)                   | 400 km |
+| 2   | Orange     | PV-Leistung (`evcc_pv_power`)                      | 10 kW  |
+| 3   | Grün       | Hausbatterie SoC (`evcc_battery_soc`)              | 100 %  |
+| 4   | Dunkelgrün | EV-Ladeleistung (`evcc_e_auto_laden_charge_power`) | 11 kW  |
 
 Bar 4 trägt eine **gelbe Markierungslinie bei 3.6 kW** (1-phasige Lade-Schwelle). Werte werden via Lambda als Fill-Höhe berechnet (Faktor 3.5 bei %, sonst proportional).
 
@@ -57,13 +57,24 @@ LVGL-Meter-Widget, 190×200 px (asymmetrisch — die Panel-Pixel sind breiter al
 
 ## Solar-Energie-Graph
 
-Identisch zum MAtouch-Setup:
-
 ```
 HA Automation (browser_mod) → Python-Server :8765 → ESP32 (online_image)
 ```
 
-JPEG wird alle 2 min gepullt und in einem `image`-Widget (580×185 px) angezeigt. Server-Setup, browser_mod und apexcharts-Abhängigkeiten sind unter `../ha_7zoll_disp/README.md` dokumentiert.
+JPEG wird alle 5 min gepullt und in einem `image`-Widget (580×185 px) angezeigt. Server-Setup, browser_mod und apexcharts-Abhängigkeiten sind unter `../ha_7zoll_disp/README.md` dokumentiert.
+
+**Render-Pipeline für die Waveshare-Variante** (Endpoint `/temp_graph_580.jpg`):
+
+- SVG kommt per POST von `browser_mod` mit eingebetteten CSS-Custom-Properties (`var(--primary-text-color)`) und winzigen Default-Schriftgrößen (11–12 px) — beides für Standalone-Rendering ungeeignet
+- Server textuell: `var(--…)` → konkrete Hex-Farben, `font-size`-Attribut der `apexcharts-text`-Elemente um Faktor 3× hochgesetzt, `<foreignObject>` (Legend-HTML) entfernt
+- Render via **`rsvg-convert`** (librsvg). CairoSVG hatte hier reproduzierbar `fill="#ffffff"` als grün gerendert auf `.apexcharts-text`-Elementen — nicht zu workarounden, deshalb librsvg
+- 2× Supersampling: SVG bei 1160×370 rendern, dann via PIL `Image.BOX` auf 580×185 mitteln. BOX-Filter (kein LANCZOS) — keine Ringing-Halos auf den 1-px-Strokes
+- JPEG quality 95, `subsampling=0` (4:4:4) gegen Chroma-Verwischung an harten Farbgrenzen
+- Apparante Endgröße ~12–15 KB → ~210 KB RGB565-Decode-Buffer auf dem ESP (vorher 27 KB JPEG → 400 KB Buffer wegen 729×275 MAtouch-Output)
+- ESP-Seite: `online_image: resize: 580x185` als Safety-Net, `on_download_finished` und `on_error` Logger für Diagnose
+- MAtouch-Pfad (`/temp_graph.jpg`, 729×275) bleibt parallel mit dem alten `viewBox`-10%-Hack erhalten; nur die Waveshare-Variante hat das saubere Setup
+
+**ApexCharts-Card-Config (Lovelace):** `tickAmount` wird bei datetime-X-Achsen oft ignoriert. Stattdessen `apex_config.xaxis.labels.formatter` mit `EVAL:` JS-Funktion benutzen, die nur an gewünschten Zeitpunkten (z. B. alle 30 min) einen Label zurückgibt — Toleranz ±2 min einbauen, weil die Sensor-Timestamps nicht exakt auf den Halbstunden landen.
 
 ## Home Assistant Integration
 

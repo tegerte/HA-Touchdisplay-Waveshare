@@ -58,6 +58,14 @@ psram:
   mode: octal
   speed: 80MHz
 
+# Override: PCLK von 16 MHz auf 14 MHz reduzieren — verringert PSRAM-DMA-
+# Last des RGB-Display-Treibers und damit sporadisches Flackern, wenn
+# WiFi/JPEG-Decode parallel auf PSRAM zugreifen.
+# (Bounce-Buffer mit 10 Zeilen ist im ESPHome mipi_rgb-Code bereits hardcoded.)
+display:
+  - id: !extend waveshare_display
+    pclk_frequency: 14MHz
+
 #######################################################################
 #  Connectivity
 #######################################################################
@@ -178,15 +186,19 @@ http_request:
   verify_ssl: false
 
 online_image:
-  - url: "http://${graph_server_ip}:8765/temp_graph.jpg"
+  - url: "http://${graph_server_ip}:8765/temp_graph_580.jpg"
     id: temp_graph_img
     format: JPEG
     type: RGB565
-    update_interval: 2min
+    resize: 580x185
+    update_interval: 5min
     on_download_finished:
+      - logger.log: "online_image: temp_graph download finished"
       - lvgl.image.update:
           id: temp_graph_widget
           src: temp_graph_img
+    on_error:
+      - logger.log: "online_image: temp_graph download FAILED"
 
 #######################################################################
 #  Home Assistant sensors
