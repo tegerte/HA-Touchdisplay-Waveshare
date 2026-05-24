@@ -25,7 +25,7 @@ esphome run ha_7zoll_waveshare_esp32-s3-touch.yaml --device /dev/cu.usbmodem<...
 esphome logs ha_7zoll_waveshare_esp32-s3-touch.yaml --device waveshare-esp32s3-7.local
 ```
 
-Aktuelle Geräte-IP: `192.168.1.99`. mDNS-Port-5353-Warnung auf macOS ist harmlos.
+Aktuelle Geräte-IP: `192.168.1.105`. mDNS-Port-5353-Warnung auf macOS ist harmlos.
 
 ## Architecture
 
